@@ -1,0 +1,218 @@
+// Generic API helper with credentials support
+export async function api(
+  endpoint: string,
+  options: RequestInit = {}
+): Promise<Response> {
+  const defaultOptions: RequestInit = {
+    credentials: "include", // Include cookies in requests
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+  };
+
+  const res = await fetch(endpoint, { ...defaultOptions, ...options });
+  return res;
+}
+
+export async function getProduct(): Promise<any> {
+  const res = await api("/api/product");
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || "Failed to load product");
+  return json;
+}
+
+export async function getProducts(): Promise<any> {
+  const res = await api("/api/products");
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || "Failed to load products");
+  return json;
+}
+
+export async function getProductById(id: string): Promise<any> {
+  const res = await api(`/api/products/${encodeURIComponent(id)}`);
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || "Failed to load product");
+  return json;
+}
+
+export async function createCheckout(
+  productId: string,
+  quantity: number
+): Promise<any> {
+  const res = await api("/api/checkout", {
+    method: "POST",
+    body: JSON.stringify({ productId, quantity }),
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || "Checkout failed");
+  return json;
+}
+
+export async function createCartCheckout(
+  items: Array<{ productId: string; quantity: number }>
+): Promise<any> {
+  const res = await api("/api/checkout/cart", {
+    method: "POST",
+    body: JSON.stringify({ items }),
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || "Checkout failed");
+  return json;
+}
+
+// Admin API functions (now use JWT auth via httpOnly cookies)
+export async function adminInventory(): Promise<any> {
+  const res = await api("/api/admin/inventory");
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || "Admin inventory failed");
+  return json;
+}
+
+export async function adminOrders(): Promise<any> {
+  const res = await api("/api/admin/orders");
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || "Admin orders failed");
+  return json;
+}
+
+export async function adminCustomers(): Promise<any> {
+  const res = await api("/api/admin/customers");
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || "Admin customers failed");
+  return json;
+}
+
+export async function adminGroups(): Promise<any> {
+  const res = await api("/api/admin/groups");
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || "Admin groups failed");
+  return json;
+}
+
+export async function adminCreateGroup(payload: any): Promise<any> {
+  const res = await api("/api/admin/groups", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || "Admin create group failed");
+  return json;
+}
+
+export async function adminUpdateGroup(id: string, payload: any): Promise<any> {
+  const res = await api(`/api/admin/groups/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || "Admin update group failed");
+  return json;
+}
+
+export async function adminDeleteGroup(id: string): Promise<any> {
+  const res = await api(`/api/admin/groups/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || "Admin delete group failed");
+  return json;
+}
+
+export async function adminProducts(): Promise<any> {
+  const res = await api("/api/admin/products");
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || "Admin products failed");
+  return json;
+}
+
+export async function adminCreateProduct(payload: any): Promise<any> {
+  const res = await api("/api/admin/products", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || "Admin create product failed");
+  return json;
+}
+
+export async function adminUpdateProduct(
+  id: string,
+  payload: any
+): Promise<any> {
+  const res = await api(`/api/admin/products/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || "Admin update product failed");
+  return json;
+}
+
+export async function adminDeleteProduct(id: string): Promise<any> {
+  const res = await api(`/api/admin/products/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || "Admin delete product failed");
+  return json;
+}
+
+export async function adminUploadImage(file: File): Promise<any> {
+  const form = new FormData();
+  form.append("file", file);
+
+  const res = await api("/api/admin/upload", {
+    method: "POST",
+    headers: {}, // Clear Content-Type to let browser set it with boundary
+    body: form,
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || "Upload failed");
+  return json;
+}
+
+// Shipping API functions
+
+export async function calculateShipping(
+  items: Array<{ productId: string; quantity: number }>,
+  country?: string
+): Promise<any> {
+  const res = await api("/api/shipping/calculate", {
+    method: "POST",
+    body: JSON.stringify({ items, country }),
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || "Shipping calculation failed");
+  return json;
+}
+
+export async function adminGetShipping(): Promise<any> {
+  const res = await api("/api/admin/shipping");
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || "Failed to get shipping config");
+  return json;
+}
+
+export async function adminUpdateShippingZone(
+  id: string,
+  payload: any
+): Promise<any> {
+  const res = await api(`/api/admin/shipping/zones/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || "Failed to update shipping zone");
+  return json;
+}
+
+export async function adminCreateShippingZone(payload: any): Promise<any> {
+  const res = await api("/api/admin/shipping/zones", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || "Failed to create shipping zone");
+  return json;
+}

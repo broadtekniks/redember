@@ -1,0 +1,140 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Product {
+  id         String   @id
+  name       String
+  sku        String   @unique
+  priceCents Int
+  currency   String
+  stock      Int
+  description String?
+  imageUrl   String?
+
+  // Variants support: group multiple SKUs (products) under one catalog product.
+  groupId    String?
+  variantName String?
+
+  // Shipping metadata (for physical goods)
+  requiresShipping Boolean @default(true)
+  weightGrams Int?       // Legacy weight in grams
+  weightOz    Float?     // Weight in ounces (for US products)
+  weightG     Float?     // Weight in grams (decimal for precision)
+  volumeMl    Float?     // Volume in milliliters (for liquids)
+  lengthMm   Int?
+  widthMm    Int?
+  heightMm   Int?
+
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  orders     Order[]
+
+  group      ProductGroup? @relation(fields: [groupId], references: [id])
+}
+
+model ProductGroup {
+  id          String   @id @default(cuid())
+  name        String
+  handle      String   @unique
+  description String?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  products    Product[]
+  images      ProductImage[]
+}
+
+model ProductImage {
+  id        String   @id @default(cuid())
+  groupId   String
+  url       String
+  alt       String?
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+
+  group     ProductGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@index([groupId, sortOrder])
+}
+
+model Order {
+  id              String   @id @default(cuid())
+  stripeSessionId String   @unique
+  paymentIntentId String?
+  status          String
+
+  productId       String
+  sku             String
+  quantity        Int
+
+  email           String?
+  phone           String?
+
+  shippingName    String?
+  shippingLine1   String?
+  shippingLine2   String?
+  shippingCity    String?
+  shippingState   String?
+  shippingPostal  String?
+  shippingCountry String?
+
+  amountTotal     Int
+  currency        String
+  itemsJson       String
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  product         Product  @relation(fields: [productId], references: [id])
+
+  @@index([createdAt])
+}
+
+model AdminUser {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String?
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([email])
+}
+
+model ShippingZone {
+  id               String   @id @default(cuid())
+  name             String   // "United States", "International", etc.
+  countries        String[] // ISO country codes: ["US", "CA", "MX"]
+  enabled          Boolean  @default(true)
+  freeShippingMin  Int?     // Minimum order value in cents for free shipping
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  weightTiers      WeightTier[]
+
+  @@index([enabled])
+}
+
+model WeightTier {
+  id            String   @id @default(cuid())
+  zoneId        String
+  minWeightG    Int      // Minimum weight in grams (inclusive)
+  maxWeightG    Int      // Maximum weight in grams (inclusive)
+  rateCents     Int      // Shipping cost in cents
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  zone          ShippingZone @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+
+  @@index([zoneId, minWeightG])
+}
