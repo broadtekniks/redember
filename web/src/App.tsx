@@ -15,6 +15,10 @@ import AdminOrders from "./pages/AdminOrders";
 import AdminCustomers from "./pages/AdminCustomers";
 import AdminShipping from "./pages/AdminShipping";
 import AdminCreateOrder from "./pages/AdminCreateOrder";
+import AdminUsers from "./pages/AdminUsers";
+import AdminSettings from "./pages/AdminSettings";
+import AdminProductCategories from "./pages/AdminProductCategories";
+import AdminMediaGallery from "./pages/AdminMediaGallery";
 import { AdminAuthProvider } from "./context/AdminAuthContext";
 
 function AdminRoutes() {
@@ -28,7 +32,11 @@ function AdminRoutes() {
           <Route path="orders/new" element={<AdminCreateOrder />} />
           <Route path="customers" element={<AdminCustomers />} />
           <Route path="inventory" element={<AdminInventory />} />
+          <Route path="categories" element={<AdminProductCategories />} />
           <Route path="shipping" element={<AdminShipping />} />
+          <Route path="users" element={<AdminUsers />} />
+          <Route path="media" element={<AdminMediaGallery />} />
+          <Route path="settings" element={<AdminSettings />} />
         </Route>
       </Routes>
     </AdminAuthProvider>

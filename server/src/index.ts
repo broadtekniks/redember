@@ -2,6 +2,7 @@ import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import Stripe from "stripe";
+import bcrypt from "bcrypt";
 import multer from "multer";
 import path from "node:path";
 import fs from "node:fs";
@@ -11,14 +12,17 @@ import {
   S3Client,
   PutObjectCommand,
   GetObjectCommand,
+  DeleteObjectCommand,
+  ListObjectsV2Command,
 } from "@aws-sdk/client-s3";
 import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import pg from "pg";
 
+import type { Prisma } from "@prisma/client";
+
 import { config } from "./config";
 import { prisma } from "./db";
-import { ensureSeedProduct } from "./seedProduct.js";
 import { ensureDefaultShippingZone } from "./seedShipping.js";
 import authRoutes from "./auth/routes";
 import { requireAuth } from "./auth/middleware";
@@ -418,7 +422,10 @@ interface Product {
   stock: number;
   description: string | null;
   imageUrl: string | null;
-  groupId: string | null;
+  heatIntensity: number;
+  heatProfile: string;
+  heatProfileDescriptions?: Record<string, string> | Prisma.JsonValue | null;
+  categoryId: string | null;
   variantName: string | null;
   requiresShipping: boolean;
   weightGrams: number | null;
@@ -429,6 +436,17 @@ interface Product {
   widthMm: number | null;
   heightMm: number | null;
   active: boolean;
+  bestSeller: boolean;
+
+  // Included on certain queries (e.g. admin/products, products/:id)
+  variantValues?: Array<{
+    id: string;
+    productId: string;
+    variantTypeId: string;
+    value: string;
+    createdAt: Date;
+    variantType?: any;
+  }>;
 }
 
 function serializeProduct(product: Product): Product {
@@ -441,7 +459,11 @@ function serializeProduct(product: Product): Product {
     stock: product.stock,
     description: product.description || null,
     imageUrl: product.imageUrl || null,
-    groupId: product.groupId || null,
+    heatIntensity:
+      Number.isFinite(product.heatIntensity) && product.heatIntensity >= 0
+        ? product.heatIntensity
+        : 50,
+    categoryId: product.categoryId || null,
     variantName: product.variantName || null,
     requiresShipping: product.requiresShipping,
     weightGrams: product.weightGrams || null,
@@ -452,7 +474,62 @@ function serializeProduct(product: Product): Product {
     widthMm: product.widthMm || null,
     heightMm: product.heightMm || null,
     active: product.active,
+    bestSeller: product.bestSeller,
+    heatProfile: product.heatProfile || "standard",
+    heatProfileDescriptions: product.heatProfileDescriptions || undefined,
+
+    // Preserve variant values when present so UIs can display/edit them.
+    variantValues: Array.isArray(product.variantValues)
+      ? product.variantValues.map((vv: any) => ({
+          id: vv.id,
+          productId: vv.productId,
+          variantTypeId: vv.variantTypeId,
+          value: vv.value,
+          createdAt: vv.createdAt,
+          variantType: vv.variantType
+            ? {
+                id: vv.variantType.id,
+                categoryId: vv.variantType.categoryId ?? null,
+                scope: vv.variantType.scope,
+                isDefault: vv.variantType.isDefault,
+                name: vv.variantType.name,
+                displayOrder: vv.variantType.displayOrder,
+                createdAt: vv.variantType.createdAt,
+                updatedAt: vv.variantType.updatedAt,
+              }
+            : undefined,
+        }))
+      : undefined,
   };
+}
+
+const HEAT_PROFILE_KEYS = ["gentle", "standard", "inferno"] as const;
+type HeatProfileKey = (typeof HEAT_PROFILE_KEYS)[number];
+const VALID_HEAT_PROFILES = new Set<HeatProfileKey>(HEAT_PROFILE_KEYS);
+const DEFAULT_HEAT_PROFILE_DESCRIPTIONS: Record<HeatProfileKey, string> = {
+  gentle: "A subtle, everyday drizzling heat that's accessible to all palates",
+  standard: "Balanced numbing heat with Sichuan peppercorn complexity",
+  inferno: "Extreme heat for true spice warriors - proceed with caution",
+};
+
+function mergeHeatProfileDescriptions(
+  source?: unknown
+): Record<HeatProfileKey, string> {
+  const merged: Record<HeatProfileKey, string> = {
+    ...DEFAULT_HEAT_PROFILE_DESCRIPTIONS,
+  };
+  if (source && typeof source === "object") {
+    const payload = source as Record<string, unknown>;
+    for (const key of HEAT_PROFILE_KEYS) {
+      if (Object.prototype.hasOwnProperty.call(payload, key)) {
+        const value = payload[key];
+        if (typeof value === "string") {
+          merged[key] = value;
+        }
+      }
+    }
+  }
+  return merged;
 }
 
 // A) Products endpoints
@@ -462,6 +539,12 @@ app.get(
     const products = await prisma.product.findMany({
       where: { active: true },
       orderBy: { createdAt: "asc" },
+      include: {
+        variantValues: {
+          include: { variantType: true },
+          orderBy: { variantType: { displayOrder: "asc" } },
+        },
+      },
     });
     res.json(products.map(serializeProduct));
   }
@@ -473,12 +556,43 @@ app.get(
     const id = req.params.id as string;
     const product = await prisma.product.findFirst({
       where: { id, active: true },
+      include: {
+        variantValues: {
+          include: { variantType: true },
+          orderBy: { variantType: { displayOrder: "asc" } },
+        },
+      },
     });
     if (!product) {
       res.status(404).json({ error: "Product not found" });
       return;
     }
     res.json(serializeProduct(product));
+  }
+);
+
+// Public: category images (used by storefront product page)
+app.get(
+  "/api/categories/:categoryId/images",
+  async (req: Request, res: Response): Promise<void> => {
+    const categoryId = String(req.params.categoryId || "").trim();
+    if (!categoryId) {
+      res.status(400).json({ error: "categoryId is required" });
+      return;
+    }
+
+    const images = await prisma.productImage.findMany({
+      where: { categoryId },
+      orderBy: { sortOrder: "asc" },
+      select: {
+        id: true,
+        url: true,
+        alt: true,
+        sortOrder: true,
+      },
+    });
+
+    res.json(images);
   }
 );
 
@@ -755,7 +869,7 @@ app.get(
         sku: p.sku,
         name: p.name,
         variantName: p.variantName || null,
-        groupId: p.groupId || null,
+        categoryId: p.categoryId || null,
         priceCents: p.priceCents,
         currency: p.currency,
         stock: p.stock,
@@ -773,20 +887,20 @@ app.get(
   }
 );
 
-// Admin: product groups
+// Admin: product categories
 app.get(
-  "/api/admin/groups",
+  "/api/admin/categories",
   requireAuth,
   async (_req: Request, res: Response): Promise<void> => {
-    const groups = await prisma.productGroup.findMany({
+    const categories = await prisma.productCategory.findMany({
       orderBy: { createdAt: "asc" },
     });
-    res.json(groups);
+    res.json(categories);
   }
 );
 
 app.post(
-  "/api/admin/groups",
+  "/api/admin/categories",
   requireAuth,
   async (req: Request, res: Response): Promise<void> => {
     const name = (req.body?.name || "").trim();
@@ -802,7 +916,7 @@ app.post(
       return;
     }
 
-    const created = await prisma.productGroup.create({
+    const created = await prisma.productCategory.create({
       data: {
         name,
         handle,
@@ -815,7 +929,7 @@ app.post(
 );
 
 app.put(
-  "/api/admin/groups/:id",
+  "/api/admin/categories/:id",
   requireAuth,
   async (req: Request, res: Response): Promise<void> => {
     const id = req.params.id as string;
@@ -834,7 +948,7 @@ app.put(
       return;
     }
 
-    const updated = await prisma.productGroup.update({
+    const updated = await prisma.productCategory.update({
       where: { id },
       data: {
         name,
@@ -848,22 +962,628 @@ app.put(
 );
 
 app.delete(
-  "/api/admin/groups/:id",
+  "/api/admin/categories/:id",
   requireAuth,
   async (req: Request, res: Response): Promise<void> => {
     const id = req.params.id as string;
 
     // prevent deleting if it still has products
-    const count = await prisma.product.count({ where: { groupId: id } });
+    const count = await prisma.product.count({ where: { categoryId: id } });
     if (count > 0) {
       res
         .status(400)
-        .json({ error: "Cannot delete group with existing variants" });
+        .json({ error: "Cannot delete category with existing variants" });
       return;
     }
 
-    await prisma.productGroup.delete({ where: { id } });
+    await prisma.productCategory.delete({ where: { id } });
     res.json({ ok: true });
+  }
+);
+
+async function ensureDefaultVariantTypes(): Promise<void> {
+  const defaults: Array<{ name: string; displayOrder: number }> = [
+    { name: "Size", displayOrder: 0 },
+    { name: "Color", displayOrder: 1 },
+  ];
+
+  await Promise.all(
+    defaults.map((d) =>
+      prisma.productVariantType.upsert({
+        where: {
+          scope_name: {
+            scope: "global",
+            name: d.name,
+          },
+        },
+        update: {
+          isDefault: true,
+          displayOrder: d.displayOrder,
+        },
+        create: {
+          scope: "global",
+          isDefault: true,
+          name: d.name,
+          displayOrder: d.displayOrder,
+        },
+      })
+    )
+  );
+}
+
+// Admin: Variant Types
+app.get(
+  "/api/admin/variant-types",
+  requireAuth,
+  async (_req: Request, res: Response): Promise<void> => {
+    await ensureDefaultVariantTypes();
+    const types = await prisma.productVariantType.findMany({
+      where: {
+        scope: "global",
+      },
+      orderBy: [
+        { isDefault: "desc" },
+        { displayOrder: "asc" },
+        { name: "asc" },
+      ],
+    });
+    res.json(types);
+  }
+);
+
+app.post(
+  "/api/admin/variant-types",
+  requireAuth,
+  async (req: Request, res: Response): Promise<void> => {
+    const { name, displayOrder } = req.body;
+
+    if (!name || typeof name !== "string" || !name.trim()) {
+      res.status(400).json({ error: "name is required" });
+      return;
+    }
+
+    const trimmed = name.trim();
+    const created = await prisma.productVariantType.upsert({
+      where: {
+        scope_name: {
+          scope: "global",
+          name: trimmed,
+        },
+      },
+      update: {
+        displayOrder:
+          typeof displayOrder === "number" ? displayOrder : undefined,
+      },
+      create: {
+        scope: "global",
+        name: trimmed,
+        displayOrder: typeof displayOrder === "number" ? displayOrder : 0,
+      },
+    });
+
+    res.json(created);
+  }
+);
+
+app.delete(
+  "/api/admin/variant-types/:typeId",
+  requireAuth,
+  async (req: Request, res: Response): Promise<void> => {
+    const typeId = String((req.params as any).typeId || "");
+    const found = await prisma.productVariantType.findUnique({
+      where: { id: typeId },
+    });
+    if (!found || found.scope !== "global") {
+      res.status(404).json({ error: "Variant type not found" });
+      return;
+    }
+    if (found.isDefault) {
+      res
+        .status(400)
+        .json({ error: "Default variant types cannot be deleted" });
+      return;
+    }
+    await prisma.productVariantType.delete({ where: { id: typeId } });
+    res.json({ ok: true });
+  }
+);
+
+app.get(
+  "/api/admin/categories/:categoryId/variant-types",
+  requireAuth,
+  async (req: Request, res: Response): Promise<void> => {
+    const categoryId = req.params.categoryId as string;
+    const categoryScope = `category:${categoryId}`;
+    const legacyScope = `group:${categoryId}`;
+    const types = await prisma.productVariantType.findMany({
+      where: {
+        OR: [
+          { scope: categoryScope },
+          { scope: legacyScope },
+          { scope: "global", isDefault: true },
+        ],
+      },
+      orderBy: { displayOrder: "asc" },
+    });
+    res.json(types);
+  }
+);
+
+app.post(
+  "/api/admin/categories/:categoryId/variant-types",
+  requireAuth,
+  async (req: Request, res: Response): Promise<void> => {
+    const categoryId = req.params.categoryId as string;
+    const { name, displayOrder } = req.body;
+
+    if (!name || typeof name !== "string" || !name.trim()) {
+      res.status(400).json({ error: "name is required" });
+      return;
+    }
+
+    const categoryScope = `category:${categoryId}`;
+    const type = await prisma.productVariantType.create({
+      data: {
+        categoryId,
+        scope: categoryScope,
+        name: name.trim(),
+        displayOrder: typeof displayOrder === "number" ? displayOrder : 0,
+      },
+    });
+    res.json(type);
+  }
+);
+
+app.delete(
+  "/api/admin/categories/:categoryId/variant-types/:typeId",
+  requireAuth,
+  async (req: Request, res: Response): Promise<void> => {
+    const typeId = String((req.params as any).typeId || "");
+    const found = await prisma.productVariantType.findUnique({
+      where: { id: typeId },
+    });
+    const categoryId = req.params.categoryId as string;
+    const categoryScope = `category:${categoryId}`;
+    const legacyScope = `group:${categoryId}`;
+    if (
+      !found ||
+      (found.scope !== categoryScope && found.scope !== legacyScope)
+    ) {
+      res.status(404).json({ error: "Variant type not found" });
+      return;
+    }
+    await prisma.productVariantType.delete({ where: { id: typeId } });
+    res.json({ ok: true });
+  }
+);
+
+// Admin: Product Variant Values
+app.put(
+  "/api/admin/products/:productId/variant-values",
+  requireAuth,
+  async (req: Request, res: Response): Promise<void> => {
+    try {
+      const productId = req.params.productId as string;
+      const { values } = req.body;
+
+      if (!Array.isArray(values)) {
+        res.status(400).json({ error: "values must be an array" });
+        return;
+      }
+
+      // Delete existing values
+      await prisma.productVariantValue.deleteMany({ where: { productId } });
+
+      // Create new values
+      const normalized: Array<{ variantTypeId: string; value: string }> = [];
+      const seen = new Set<string>();
+
+      for (const raw of values) {
+        const variantTypeId = String(raw?.variantTypeId || "").trim();
+        const value = String(raw?.value || "").trim();
+        if (!variantTypeId || !value) continue;
+        const key = `${variantTypeId}::${value.toLowerCase()}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        normalized.push({ variantTypeId, value });
+      }
+
+      const created = await Promise.all(
+        normalized.map((v) =>
+          prisma.productVariantValue.create({
+            data: {
+              productId,
+              variantTypeId: v.variantTypeId,
+              value: v.value,
+            },
+            include: { variantType: true },
+          })
+        )
+      );
+
+      res.json(created);
+    } catch (err: any) {
+      console.error("Failed to set variant values", err);
+      res.status(500).json({ error: err?.message || "Internal Server Error" });
+    }
+  }
+);
+
+// Admin: Category Images
+app.get(
+  "/api/admin/categories/:categoryId/images",
+  requireAuth,
+  async (req: Request, res: Response): Promise<void> => {
+    const categoryId = req.params.categoryId as string;
+    const images = await prisma.productImage.findMany({
+      where: { categoryId },
+      orderBy: { sortOrder: "asc" },
+      include: {
+        media: true,
+      },
+    });
+    res.json(images);
+  }
+);
+
+app.post(
+  "/api/admin/categories/:categoryId/images",
+  requireAuth,
+  async (req: Request, res: Response): Promise<void> => {
+    const categoryId = req.params.categoryId as string;
+    const mediaId = (req.body?.mediaId || "").trim();
+
+    if (!mediaId) {
+      res.status(400).json({ error: "mediaId is required" });
+      return;
+    }
+
+    // Check if category exists
+    const category = await prisma.productCategory.findUnique({
+      where: { id: categoryId },
+    });
+    if (!category) {
+      res.status(404).json({ error: "Category not found" });
+      return;
+    }
+
+    // Check if media exists
+    const media = await prisma.media.findUnique({
+      where: { id: mediaId },
+    });
+    if (!media) {
+      res.status(404).json({ error: "Media not found" });
+      return;
+    }
+
+    // Get max sortOrder and add 1
+    const maxImage = await prisma.productImage.findFirst({
+      where: { categoryId },
+      orderBy: { sortOrder: "desc" },
+    });
+    const sortOrder = (maxImage?.sortOrder ?? -1) + 1;
+
+    const image = await prisma.productImage.create({
+      data: {
+        categoryId,
+        mediaId,
+        sortOrder,
+      },
+      include: {
+        media: true,
+      },
+    });
+    res.status(201).json(image);
+  }
+);
+
+app.put(
+  "/api/admin/categories/:categoryId/images/:id",
+  requireAuth,
+  async (req: Request, res: Response): Promise<void> => {
+    const id = req.params.id as string;
+    const categoryId = req.params.categoryId as string;
+    const sortOrder =
+      typeof req.body?.sortOrder === "number" ? req.body.sortOrder : undefined;
+
+    const image = await prisma.productImage.findUnique({ where: { id } });
+    if (!image || image.categoryId !== categoryId) {
+      res.status(404).json({ error: "Image not found" });
+      return;
+    }
+
+    const updated = await prisma.productImage.update({
+      where: { id },
+      data: {
+        ...(sortOrder !== undefined ? { sortOrder } : {}),
+      },
+    });
+    res.json(updated);
+  }
+);
+
+app.delete(
+  "/api/admin/categories/:categoryId/images/:id",
+  requireAuth,
+  async (req: Request, res: Response): Promise<void> => {
+    const id = req.params.id as string;
+    const categoryId = req.params.categoryId as string;
+
+    const image = await prisma.productImage.findUnique({ where: { id } });
+    if (!image || image.categoryId !== categoryId) {
+      res.status(404).json({ error: "Image not found" });
+      return;
+    }
+
+    await prisma.productImage.delete({ where: { id } });
+    res.json({ ok: true });
+  }
+);
+
+// Reorder images: accepts array of {id, sortOrder}
+app.post(
+  "/api/admin/categories/:categoryId/images/reorder",
+  requireAuth,
+  async (req: Request, res: Response): Promise<void> => {
+    const categoryId = req.params.categoryId as string;
+    const updates = req.body?.updates || [];
+
+    if (!Array.isArray(updates)) {
+      res.status(400).json({ error: "updates array is required" });
+      return;
+    }
+
+    // Update each image's sortOrder
+    await Promise.all(
+      updates.map((u: { id: string; sortOrder: number }) =>
+        prisma.productImage.update({
+          where: { id: u.id },
+          data: { sortOrder: u.sortOrder },
+        })
+      )
+    );
+
+    const images = await prisma.productImage.findMany({
+      where: { categoryId },
+      orderBy: { sortOrder: "asc" },
+    });
+    res.json(images);
+  }
+);
+
+// ========== Media Library ==========
+// Get all media assets
+app.get(
+  "/api/admin/media",
+  requireAuth,
+  async (_req: Request, res: Response): Promise<void> => {
+    const media = await prisma.media.findMany({
+      orderBy: { createdAt: "desc" },
+      include: {
+        productImages: {
+          select: {
+            productId: true,
+            categoryId: true,
+          },
+        },
+      },
+    });
+
+    // Transform to include usage info
+    const mediaWithUsage = media.map((m) => ({
+      id: m.id,
+      url: m.url,
+      filename: m.filename,
+      size: m.size,
+      mimeType: m.mimeType,
+      alt: m.alt,
+      createdAt: m.createdAt,
+      updatedAt: m.updatedAt,
+      isUsed: m.productImages.length > 0,
+      usageCount: m.productImages.length,
+    }));
+
+    res.json(mediaWithUsage);
+  }
+);
+
+// Add media asset to library
+app.post(
+  "/api/admin/media",
+  requireAuth,
+  async (req: Request, res: Response): Promise<void> => {
+    const url = (req.body?.url || "").trim();
+    const filename = (req.body?.filename || "").trim() || null;
+    const size = req.body?.size || null;
+    const mimeType = (req.body?.mimeType || "").trim() || null;
+    const alt = (req.body?.alt || "").trim() || null;
+
+    if (!url) {
+      res.status(400).json({ error: "url is required" });
+      return;
+    }
+
+    // Check if media already exists
+    const existing = await prisma.media.findUnique({ where: { url } });
+    if (existing) {
+      res.json(existing);
+      return;
+    }
+
+    // Create new media record
+    const media = await prisma.media.create({
+      data: {
+        url,
+        filename,
+        size,
+        mimeType,
+        alt,
+      },
+    });
+    res.status(201).json(media);
+  }
+);
+
+// ========== Product Image Management ==========
+app.get(
+  "/api/admin/products/:productId/images",
+  requireAuth,
+  async (req: Request, res: Response): Promise<void> => {
+    const productId = req.params.productId as string;
+    const images = await prisma.productImage.findMany({
+      where: { productId },
+      orderBy: { sortOrder: "asc" },
+      include: { media: true },
+    });
+    res.json(images);
+  }
+);
+
+app.post(
+  "/api/admin/products/:productId/images",
+  requireAuth,
+  async (req: Request, res: Response): Promise<void> => {
+    const productId = req.params.productId as string;
+    const mediaId = (req.body?.mediaId || "").trim();
+    const isMain = req.body?.isMain === true;
+
+    if (!mediaId) {
+      res.status(400).json({ error: "mediaId is required" });
+      return;
+    }
+
+    // Check if product exists
+    const product = await prisma.product.findUnique({
+      where: { id: productId },
+    });
+    if (!product) {
+      res.status(404).json({ error: "Product not found" });
+      return;
+    }
+
+    // Check if media exists
+    const media = await prisma.media.findUnique({
+      where: { id: mediaId },
+    });
+    if (!media) {
+      res.status(404).json({ error: "Media not found" });
+      return;
+    }
+
+    // If this is marked as main, unset all other main images for this product
+    if (isMain) {
+      await prisma.productImage.updateMany({
+        where: { productId, isMain: true },
+        data: { isMain: false },
+      });
+    }
+
+    // Get max sortOrder and add 1
+    const maxImage = await prisma.productImage.findFirst({
+      where: { productId },
+      orderBy: { sortOrder: "desc" },
+    });
+    const sortOrder = (maxImage?.sortOrder ?? -1) + 1;
+
+    const image = await prisma.productImage.create({
+      data: {
+        productId,
+        mediaId,
+        isMain,
+        sortOrder,
+      },
+    });
+    
+    // Return with media data included
+    const result = await prisma.productImage.findUnique({
+      where: { id: image.id },
+      include: { media: true },
+    });
+    res.status(201).json(result);
+  }
+);
+
+app.patch(
+  "/api/admin/products/:productId/images/:id",
+  requireAuth,
+  async (req: Request, res: Response): Promise<void> => {
+    const id = req.params.id as string;
+    const productId = req.params.productId as string;
+    const sortOrder =
+      typeof req.body?.sortOrder === "number" ? req.body.sortOrder : undefined;
+    const isMain =
+      req.body?.isMain !== undefined ? req.body.isMain === true : undefined;
+
+    const image = await prisma.productImage.findUnique({ where: { id } });
+    if (!image || image.productId !== productId) {
+      res.status(404).json({ error: "Image not found" });
+      return;
+    }
+
+    // If setting this as main, unset all others
+    if (isMain === true) {
+      await prisma.productImage.updateMany({
+        where: { productId, isMain: true, id: { not: id } },
+        data: { isMain: false },
+      });
+    }
+
+    const updated = await prisma.productImage.update({
+      where: { id },
+      data: {
+        ...(sortOrder !== undefined ? { sortOrder } : {}),
+        ...(isMain !== undefined ? { isMain } : {}),
+      },
+    });
+    res.json(updated);
+  }
+);
+
+app.delete(
+  "/api/admin/products/:productId/images/:id",
+  requireAuth,
+  async (req: Request, res: Response): Promise<void> => {
+    const id = req.params.id as string;
+    const productId = req.params.productId as string;
+
+    const image = await prisma.productImage.findUnique({ where: { id } });
+    if (!image || image.productId !== productId) {
+      res.status(404).json({ error: "Image not found" });
+      return;
+    }
+
+    await prisma.productImage.delete({ where: { id } });
+    res.json({ ok: true });
+  }
+);
+
+app.post(
+  "/api/admin/products/:productId/images/reorder",
+  requireAuth,
+  async (req: Request, res: Response): Promise<void> => {
+    const productId = req.params.productId as string;
+    const imageIds = req.body?.imageIds || [];
+
+    if (!Array.isArray(imageIds)) {
+      res.status(400).json({ error: "imageIds array is required" });
+      return;
+    }
+
+    // Update sortOrder based on array position
+    await Promise.all(
+      imageIds.map((imageId: string, index: number) =>
+        prisma.productImage.update({
+          where: { id: imageId },
+          data: { sortOrder: index },
+        })
+      )
+    );
+
+    const images = await prisma.productImage.findMany({
+      where: { productId },
+      orderBy: { sortOrder: "asc" },
+    });
+    res.json(images);
   }
 );
 
@@ -874,6 +1594,12 @@ app.get(
   async (_req: Request, res: Response): Promise<void> => {
     const products = await prisma.product.findMany({
       orderBy: { createdAt: "asc" },
+      include: {
+        variantValues: {
+          include: { variantType: true },
+          orderBy: { variantType: { displayOrder: "asc" } },
+        },
+      },
     });
     res.json(products.map(serializeProduct));
   }
@@ -890,6 +1616,19 @@ app.post(
     const currency = (body.currency || "usd").trim().toLowerCase();
     const priceCents = Number(body.priceCents);
     const stock = Number(body.stock);
+    const heatIntensityRaw = body.heatIntensity;
+    const heatIntensity =
+      heatIntensityRaw === undefined || heatIntensityRaw === null
+        ? undefined
+        : Number(heatIntensityRaw);
+    const heatProfileRaw =
+      typeof body.heatProfile === "string"
+        ? body.heatProfile.trim().toLowerCase()
+        : "";
+    const heatProfile = heatProfileRaw || "standard";
+    const heatProfileDescriptions = mergeHeatProfileDescriptions(
+      body.heatProfileDescriptions
+    );
 
     if (!id) {
       res.status(400).json({ error: "id is required" });
@@ -911,6 +1650,24 @@ app.post(
       res.status(400).json({ error: "stock must be an integer >= 0" });
       return;
     }
+    if (heatIntensity !== undefined) {
+      if (
+        !Number.isInteger(heatIntensity) ||
+        heatIntensity < 0 ||
+        heatIntensity > 100
+      ) {
+        res.status(400).json({
+          error: "heatIntensity must be an integer between 0 and 100",
+        });
+        return;
+      }
+    }
+    if (!VALID_HEAT_PROFILES.has(heatProfile)) {
+      res.status(400).json({
+        error: "heatProfile must be one of gentle, standard, inferno",
+      });
+      return;
+    }
 
     const created = await prisma.product.create({
       data: {
@@ -923,7 +1680,11 @@ app.post(
         description:
           typeof body.description === "string" ? body.description : null,
         imageUrl: typeof body.imageUrl === "string" ? body.imageUrl : null,
-        groupId: typeof body.groupId === "string" ? body.groupId : null,
+        heatIntensity: heatIntensity === undefined ? undefined : heatIntensity,
+        heatProfile,
+        heatProfileDescriptions,
+        categoryId:
+          typeof body.categoryId === "string" ? body.categoryId : null,
         variantName:
           typeof body.variantName === "string" ? body.variantName : null,
         requiresShipping:
@@ -959,15 +1720,46 @@ app.put(
     if (typeof body.description === "string")
       data.description = body.description;
     if (typeof body.imageUrl === "string") data.imageUrl = body.imageUrl;
-    if (typeof body.groupId === "string") data.groupId = body.groupId;
-    if (body.groupId === null) data.groupId = null;
+    if (typeof body.categoryId === "string") data.categoryId = body.categoryId;
+    if (body.categoryId === null) data.categoryId = null;
     if (typeof body.variantName === "string")
       data.variantName = body.variantName;
     if (body.variantName === null) data.variantName = null;
+    if (typeof body.heatProfile === "string") {
+      const profile = body.heatProfile.trim().toLowerCase();
+      if (!VALID_HEAT_PROFILES.has(profile)) {
+        res.status(400).json({
+          error: "heatProfile must be one of gentle, standard, inferno",
+        });
+        return;
+      }
+      data.heatProfile = profile;
+    }
+
+    if (
+      body.heatProfileDescriptions &&
+      typeof body.heatProfileDescriptions === "object"
+    ) {
+      data.heatProfileDescriptions = mergeHeatProfileDescriptions(
+        body.heatProfileDescriptions
+      );
+    }
 
     if (typeof body.active === "boolean") data.active = body.active;
+    if (typeof body.bestSeller === "boolean") data.bestSeller = body.bestSeller;
     if (typeof body.requiresShipping === "boolean")
       data.requiresShipping = body.requiresShipping;
+
+    if (body.heatIntensity !== undefined) {
+      const v = Number(body.heatIntensity);
+      if (!Number.isInteger(v) || v < 0 || v > 100) {
+        res.status(400).json({
+          error: "heatIntensity must be an integer between 0 and 100",
+        });
+        return;
+      }
+      data.heatIntensity = v;
+    }
 
     if (body.priceCents !== undefined) {
       const v = Number(body.priceCents);
@@ -1048,7 +1840,11 @@ app.post(
     const safeExt = [".jpg", ".jpeg", ".png", ".webp", ".gif"].includes(ext)
       ? ext
       : ".bin";
-    const key = `product-images/${Date.now()}-${randomUUID()}${safeExt}`;
+
+    // Determine folder based on query parameter
+    const folder =
+      req.query.folder === "branding" ? "branding" : "product-images";
+    const key = `${folder}/${Date.now()}-${randomUUID()}${safeExt}`;
 
     try {
       await r2Client!.send(
@@ -1085,6 +1881,99 @@ app.post(
       res
         .status(looksLikeConnectivityIssue ? 502 : 500)
         .json({ error: "Upload failed" });
+    }
+  }
+);
+
+// Admin: delete an image from R2
+app.delete(
+  "/api/admin/media/:key(*)",
+  requireAuth,
+  async (req: Request, res: Response): Promise<void> => {
+    const key = Array.isArray(req.params.key)
+      ? req.params.key[0]
+      : req.params.key;
+
+    if (!key) {
+      res.status(400).json({ error: "key is required" });
+      return;
+    }
+
+    if (!useR2) {
+      // Delete local file
+      const filePath = path.join(uploadDir, key);
+      try {
+        if (fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+        }
+        res.status(200).json({ success: true });
+      } catch (err: any) {
+        res.status(500).json({ error: "Delete failed" });
+      }
+      return;
+    }
+
+    // Delete from R2
+    try {
+      await r2Client!.send(
+        new DeleteObjectCommand({
+          Bucket: r2!.bucket,
+          Key: key,
+        })
+      );
+      res.status(200).json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: "Delete failed" });
+    }
+  }
+);
+
+// Admin: list all media files
+app.get(
+  "/api/admin/media",
+  requireAuth,
+  async (req: Request, res: Response): Promise<void> => {
+    const folder = req.query.folder as string | undefined;
+
+    if (!useR2) {
+      // List local files
+      try {
+        const files = fs.readdirSync(uploadDir);
+        const urls = files.map((file) => ({
+          url: `/uploads/${file}`,
+          key: file,
+        }));
+        res.status(200).json(urls);
+      } catch (err: any) {
+        res.status(500).json({ error: "Failed to list media" });
+      }
+      return;
+    }
+
+    // List from R2
+    try {
+      const command = new ListObjectsV2Command({
+        Bucket: r2!.bucket,
+        Prefix: folder || "",
+        MaxKeys: 1000,
+      });
+
+      const response = await r2Client!.send(command);
+      const items = response.Contents || [];
+
+      const base = (r2!.publicBaseUrl || "").replace(/\/$/, "");
+      const urls = items.map((item) => ({
+        url: base
+          ? `${base}/${item.Key}`
+          : `/uploads/${encodeURIComponent(item.Key!)}`,
+        key: item.Key!,
+        size: item.Size,
+        lastModified: item.LastModified,
+      }));
+
+      res.status(200).json(urls);
+    } catch (err: any) {
+      res.status(500).json({ error: "Failed to list media" });
     }
   }
 );
@@ -1621,6 +2510,156 @@ app.post(
   }
 );
 
+// Admin Users Management
+app.get(
+  "/api/admin/users",
+  requireAuth,
+  async (_req: Request, res: Response): Promise<void> => {
+    try {
+      const users = await prisma.adminUser.findMany({
+        select: {
+          id: true,
+          email: true,
+          name: true,
+          active: true,
+          createdAt: true,
+        },
+        orderBy: { createdAt: "desc" },
+      });
+      res.json(users);
+    } catch (error) {
+      console.error("List admin users error:", error);
+      res.status(500).json({ error: "Failed to list users" });
+    }
+  }
+);
+
+app.post(
+  "/api/admin/users",
+  requireAuth,
+  async (req: Request, res: Response): Promise<void> => {
+    try {
+      const { email, password, name, active } = req.body;
+
+      if (!email || !password) {
+        res.status(400).json({ error: "Email and password are required" });
+        return;
+      }
+
+      const existing = await prisma.adminUser.findUnique({
+        where: { email },
+      });
+
+      if (existing) {
+        res.status(400).json({ error: "User with this email already exists" });
+        return;
+      }
+
+      const passwordHash = await bcrypt.hash(password, 10);
+
+      const user = await prisma.adminUser.create({
+        data: {
+          email,
+          passwordHash,
+          name: name || null,
+          active: active ?? true,
+        },
+        select: {
+          id: true,
+          email: true,
+          name: true,
+          active: true,
+          createdAt: true,
+        },
+      });
+
+      res.status(201).json(user);
+    } catch (error) {
+      console.error("Create admin user error:", error);
+      res.status(500).json({ error: "Failed to create user" });
+    }
+  }
+);
+
+app.put(
+  "/api/admin/users/:id",
+  requireAuth,
+  async (req: Request, res: Response): Promise<void> => {
+    try {
+      const id = String((req.params as any).id || "");
+      const { name, active } = req.body;
+
+      const data: any = {};
+      if (name !== undefined) data.name = name || null;
+      if (active !== undefined) data.active = active;
+
+      const user = await prisma.adminUser.update({
+        where: { id },
+        data,
+        select: {
+          id: true,
+          email: true,
+          name: true,
+          active: true,
+          createdAt: true,
+        },
+      });
+
+      res.json(user);
+    } catch (error) {
+      console.error("Update admin user error:", error);
+      res.status(500).json({ error: "Failed to update user" });
+    }
+  }
+);
+
+app.delete(
+  "/api/admin/users/:id",
+  requireAuth,
+  async (req: Request, res: Response): Promise<void> => {
+    try {
+      const id = String((req.params as any).id || "");
+
+      await prisma.adminUser.delete({
+        where: { id },
+      });
+
+      res.json({ ok: true });
+    } catch (error) {
+      console.error("Delete admin user error:", error);
+      res.status(500).json({ error: "Failed to delete user" });
+    }
+  }
+);
+
+app.post(
+  "/api/admin/users/:id/password",
+  requireAuth,
+  async (req: Request, res: Response): Promise<void> => {
+    try {
+      const id = String((req.params as any).id || "");
+      const { password } = req.body;
+
+      if (!password) {
+        res.status(400).json({ error: "Password is required" });
+        return;
+      }
+
+      const passwordHash = await bcrypt.hash(password, 10);
+
+      await prisma.adminUser.update({
+        where: { id },
+        data: { passwordHash },
+      });
+
+      res.json({ ok: true });
+    } catch (error) {
+      console.error("Change password error:", error);
+      res.status(500).json({ error: "Failed to change password" });
+    }
+  }
+);
+
 // Admin: Get shipping configuration
 app.get(
   "/api/admin/shipping",
@@ -1763,8 +2802,101 @@ app.use(
   }
 );
 
+// ============================================================
+// SETTINGS API
+// ============================================================
+
+// Public settings endpoint (no auth required) - only returns public-safe settings
+app.get(
+  "/api/settings",
+  async (_req: Request, res: Response): Promise<void> => {
+    try {
+      const settings = await prisma.storeSetting.findMany();
+      const settingsMap: Record<string, any> = {};
+
+      // Only expose public settings
+      const publicKeys = [
+        "primaryColor",
+        "storeName",
+        "storeDescription",
+        "logoUrl",
+        "faviconUrl",
+        "currency",
+        "supportEmail",
+        "supportPhone",
+      ];
+
+      for (const setting of settings) {
+        if (publicKeys.includes(setting.key)) {
+          try {
+            settingsMap[setting.key] = JSON.parse(setting.value);
+          } catch {
+            settingsMap[setting.key] = setting.value;
+          }
+        }
+      }
+
+      res.json(settingsMap);
+    } catch (err: any) {
+      console.error("Failed to load public settings:", err);
+      res.status(500).json({ error: "Failed to load settings" });
+    }
+  }
+);
+
+// Admin settings endpoint (requires auth) - returns all settings
+app.get(
+  "/api/admin/settings",
+  requireAuth,
+  async (_req: Request, res: Response): Promise<void> => {
+    try {
+      const settings = await prisma.storeSetting.findMany();
+      const settingsMap: Record<string, any> = {};
+
+      for (const setting of settings) {
+        try {
+          settingsMap[setting.key] = JSON.parse(setting.value);
+        } catch {
+          settingsMap[setting.key] = setting.value;
+        }
+      }
+
+      res.json(settingsMap);
+    } catch (err: any) {
+      console.error("Failed to load settings:", err);
+      res.status(500).json({ error: "Failed to load settings" });
+    }
+  }
+);
+
+app.put(
+  "/api/admin/settings",
+  requireAuth,
+  async (req: Request, res: Response): Promise<void> => {
+    try {
+      const updates = req.body;
+
+      for (const [key, value] of Object.entries(updates)) {
+        const stringValue =
+          typeof value === "string" ? value : JSON.stringify(value);
+
+        await prisma.storeSetting.upsert({
+          where: { key },
+          update: { value: stringValue },
+          create: { key, value: stringValue },
+        });
+      }
+
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("Failed to save settings:", err);
+      res.status(500).json({ error: "Failed to save settings" });
+    }
+  }
+);
+
 async function start(): Promise<void> {
-  await ensureSeedProduct();
+  // await ensureSeedProduct(); // Hard-coded products removed
   await ensureDefaultShippingZone();
 
   app.listen(config.port, () => {

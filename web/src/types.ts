@@ -26,6 +26,10 @@ export interface CartContextType {
   getTotalQuantity: () => number;
 }
 
+export const HEAT_PROFILE_VALUES = ["gentle", "standard", "inferno"] as const;
+export type HeatProfileValue = (typeof HEAT_PROFILE_VALUES)[number];
+export type HeatProfileDescriptions = Record<HeatProfileValue, string>;
+
 export interface Product {
   id: string;
   name: string;
@@ -35,7 +39,12 @@ export interface Product {
   stock: number;
   description: string | null;
   imageUrl: string | null;
-  groupId: string | null;
+
+  heatIntensity?: number;
+  heatProfile?: string;
+  heatProfileDescriptions?: HeatProfileDescriptions;
+
+  categoryId: string | null;
   variantName: string | null;
   requiresShipping: boolean;
   weightGrams: number | null;
@@ -46,16 +55,49 @@ export interface Product {
   widthMm: number | null;
   heightMm: number | null;
   active: boolean;
+  bestSeller: boolean;
+  createdAt: string;
+  updatedAt: string;
+  variantValues?: ProductVariantValue[];
+}
+
+export interface ProductCategory {
+  id: string;
+  name: string;
+  handle: string;
+  description?: string;
+  active: boolean;
   createdAt: string;
   updatedAt: string;
 }
 
-export interface ProductGroup {
+export interface ProductVariantType {
   id: string;
+  categoryId: string | null;
+  scope?: string;
+  isDefault?: boolean;
   name: string;
-  handle: string;
+  displayOrder: number;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ProductVariantValue {
+  id: string;
+  productId: string;
+  variantTypeId: string;
+  value: string;
+  createdAt: string;
+  variantType?: ProductVariantType;
+}
+
+export interface ProductImage {
+  id: string;
+  categoryId: string;
+  url: string;
+  alt?: string;
+  sortOrder: number;
+  createdAt: string;
 }
 
 export interface Order {

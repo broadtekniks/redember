@@ -44,6 +44,18 @@ export default function AdminSidebar() {
           Inventory
         </NavLink>
 
+        <NavLink className={navLinkClass} to="/admin/categories">
+          <span className="material-symbols-outlined text-xl">category</span>
+          Product Categories
+        </NavLink>
+
+        <NavLink className={navLinkClass} to="/admin/media">
+          <span className="material-symbols-outlined text-xl">
+            photo_library
+          </span>
+          Media Gallery
+        </NavLink>
+
         <NavLink className={navLinkClass} to="/admin/customers">
           <span className="material-symbols-outlined text-xl">group</span>
           Customers
@@ -54,6 +66,22 @@ export default function AdminSidebar() {
             local_shipping
           </span>
           Shipping
+        </NavLink>
+
+        <div className="pt-6 pb-2 px-3 text-[10px] font-bold uppercase text-slate-400 dark:text-slate-500 tracking-widest">
+          Settings
+        </div>
+
+        <NavLink className={navLinkClass} to="/admin/settings">
+          <span className="material-symbols-outlined text-xl">settings</span>
+          Store Settings
+        </NavLink>
+
+        <NavLink className={navLinkClass} to="/admin/users">
+          <span className="material-symbols-outlined text-xl">
+            manage_accounts
+          </span>
+          Admin Users
         </NavLink>
 
         <div className="pt-6 pb-2 px-3 text-[10px] font-bold uppercase text-slate-400 dark:text-slate-500 tracking-widest">

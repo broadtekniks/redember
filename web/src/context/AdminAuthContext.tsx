@@ -6,7 +6,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { api } from "../lib/api";
+import { api, readJsonOrText } from "../lib/api";
 import type { AdminAuthContextType, AdminUser } from "../types";
 
 const AdminAuthContext = createContext<AdminAuthContextType | null>(null);
@@ -24,13 +24,14 @@ export function AdminAuthProvider({ children }: AdminAuthProviderProps) {
     const checkAuth = async (): Promise<void> => {
       try {
         const response = await api("/api/auth/me");
+        const payload = await readJsonOrText(response);
         if (!response.ok) {
+          console.warn("Auth check response not OK", payload);
           setUser(null);
           return;
         }
 
-        const data = await response.json();
-        setUser(data.user);
+        setUser(payload?.user ?? null);
       } catch (error) {
         console.error("Auth check failed:", error);
         setUser(null);
@@ -43,18 +44,31 @@ export function AdminAuthProvider({ children }: AdminAuthProviderProps) {
   }, []);
 
   const login = async (email: string, password: string): Promise<void> => {
-    const response = await api("/api/auth/login", {
-      method: "POST",
-      body: JSON.stringify({ email, password }),
-    });
+    try {
+      const response = await api("/api/auth/login", {
+        method: "POST",
+        body: JSON.stringify({ email, password }),
+      });
 
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.message || "Login failed");
+      const payload = await readJsonOrText(response);
+      if (!response.ok) {
+        const message =
+          payload?.error ??
+          payload?.message ??
+          payload?.text ??
+          "Unable to reach the admin server. Please try again later.";
+        throw new Error(message);
+      }
+
+      setUser(payload?.user ?? null);
+    } catch (error) {
+      if (error instanceof TypeError) {
+        throw new Error(
+          "Unable to connect to the backend. Ensure the server is running and try again."
+        );
+      }
+      throw error;
     }
-
-    const data = await response.json();
-    setUser(data.user);
   };
 
   const logout = async (): Promise<void> => {

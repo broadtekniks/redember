@@ -11,7 +11,7 @@ async function main() {
             currency: "usd",
             stock: 100,
             variantName: "100ml",
-            groupHandle: "red-ember-spice",
+            categoryHandle: "red-ember-spice",
             imageUrl: "https://images.unsplash.com/photo-1604909053196-3f1f510c2c5c?auto=format&fit=crop&q=80&w=1400",
         },
         {
@@ -22,7 +22,7 @@ async function main() {
             currency: "usd",
             stock: 35,
             variantName: "175ml",
-            groupHandle: "smoked-ghost",
+            categoryHandle: "smoked-ghost",
             imageUrl: "https://images.unsplash.com/photo-1626808642875-0aa545482dfb?auto=format&fit=crop&q=80&w=1400",
         },
         {
@@ -33,7 +33,7 @@ async function main() {
             currency: "usd",
             stock: 48,
             variantName: "175ml",
-            groupHandle: "honey-habanero",
+            categoryHandle: "honey-habanero",
             imageUrl: "https://images.unsplash.com/photo-1600628422019-6c1b0b2f7b1c?auto=format&fit=crop&q=80&w=1400",
         },
         {
@@ -44,14 +44,14 @@ async function main() {
             currency: "usd",
             stock: 22,
             variantName: "175ml",
-            groupHandle: "sichuan-gold",
+            categoryHandle: "sichuan-gold",
             imageUrl: "https://images.unsplash.com/photo-1615485737657-9f5f0a2d9b0a?auto=format&fit=crop&q=80&w=1400",
         },
     ];
-    const groupHandles = Array.from(new Set(products.map((p) => p.groupHandle)));
-    const groups = await Promise.all(groupHandles.map((handle) => {
-        const primary = products.find((p) => p.groupHandle === handle);
-        return prisma.productGroup.upsert({
+    const categoryHandles = Array.from(new Set(products.map((p) => p.categoryHandle)));
+    const categories = await Promise.all(categoryHandles.map((handle) => {
+        const primary = products.find((p) => p.categoryHandle === handle);
+        return prisma.productCategory.upsert({
             where: { handle },
             update: {
                 name: primary?.name || handle,
@@ -64,7 +64,7 @@ async function main() {
             },
         });
     }));
-    const groupIdByHandle = new Map(groups.map((g) => [g.handle, g.id]));
+    const categoryIdByHandle = new Map(categories.map((g) => [g.handle, g.id]));
     await Promise.all(products.map((p) => prisma.product.upsert({
         where: { id: p.id },
         update: {
@@ -72,7 +72,7 @@ async function main() {
             sku: p.sku,
             priceCents: p.priceCents,
             currency: p.currency,
-            groupId: groupIdByHandle.get(p.groupHandle) || null,
+            categoryId: categoryIdByHandle.get(p.categoryHandle) || null,
             variantName: p.variantName,
             imageUrl: p.imageUrl,
             requiresShipping: true,
@@ -85,7 +85,7 @@ async function main() {
             priceCents: p.priceCents,
             currency: p.currency,
             stock: p.stock,
-            groupId: groupIdByHandle.get(p.groupHandle) || null,
+            categoryId: categoryIdByHandle.get(p.categoryHandle) || null,
             variantName: p.variantName,
             imageUrl: p.imageUrl,
             requiresShipping: true,

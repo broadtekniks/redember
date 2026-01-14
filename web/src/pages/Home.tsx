@@ -77,42 +77,6 @@ export default function Home() {
         onClick: onViewProduct,
         disabled: !product || outOfStock,
       },
-      {
-        key: "smoked",
-        title: "Smoked Garlic",
-        subtitle: "Umami-rich with roasted cloves.",
-        price: "$22.00",
-        heat: 2,
-        image:
-          "https://images.unsplash.com/photo-1626808642875-0aa545482dfb?auto=format&fit=crop&q=80&w=1400",
-        cta: "COMING SOON",
-        disabled: true,
-      },
-      {
-        key: "ghost",
-        title: "Ghost Inferno",
-        subtitle: "Serious heat for spice lovers.",
-        price: "$24.00",
-        tag: "EXTREME HEAT",
-        heat: 5,
-        heatClass: "text-primary",
-        image:
-          "https://images.unsplash.com/photo-1600628422019-6c1b0b2f7b1c?auto=format&fit=crop&q=80&w=1400",
-        cta: "COMING SOON",
-        disabled: true,
-      },
-      {
-        key: "trio",
-        title: "The Ember Trio",
-        subtitle: "All three flavors in 2oz jars.",
-        price: "$55.00",
-        heat: 0,
-        image:
-          "https://images.unsplash.com/photo-1553530666-ba11a7da3888?auto=format&fit=crop&q=80&w=1400",
-        cta: "COMING SOON",
-        disabled: true,
-        note: "Perfect Gift",
-      },
     ];
   }, [product, outOfStock]);
 

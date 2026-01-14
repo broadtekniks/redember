@@ -101,7 +101,7 @@ export default function Shop() {
         subtitle: outOfStock
           ? "Currently unavailable"
           : "Hand-crafted heat with bold aromatics",
-        tag: p.id === "red-ember-spice" ? "Best Seller" : null,
+        tag: p.bestSeller ? "Best Seller" : null,
         image:
           p.imageUrl ||
           imagesById[p.id] ||
@@ -111,52 +111,7 @@ export default function Shop() {
       };
     });
 
-    const placeholders: PlaceholderProductDisplay[] = [
-      {
-        key: "ghost",
-        title: "Smoked Ghost Pepper",
-        price: "$24.00",
-        subtitle: "Intense heat with smoke undertones",
-        tagRight: "Hot",
-        image:
-          "https://images.unsplash.com/photo-1626808642875-0aa545482dfb?auto=format&fit=crop&q=80&w=1400",
-      },
-      {
-        key: "honey",
-        title: "Honey Habanero",
-        price: "$20.00",
-        subtitle: "Sweet heat for pizza & ribs",
-        image:
-          "https://images.unsplash.com/photo-1600628422019-6c1b0b2f7b1c?auto=format&fit=crop&q=80&w=1400",
-      },
-      {
-        key: "sichuan",
-        title: "Sichuan Peppercorn Gold",
-        price: "$22.00",
-        subtitle: "Floral notes with a numbing tingle",
-        image:
-          "https://images.unsplash.com/photo-1615485737657-9f5f0a2d9b0a?auto=format&fit=crop&q=80&w=1400",
-      },
-      {
-        key: "discovery",
-        title: "The Discovery Pack",
-        price: "$45.00",
-        subtitle: "3 x mini bottles of best sellers",
-        tag: "Gift Set",
-        image:
-          "https://images.unsplash.com/photo-1546549032-9571cd6b27df?auto=format&fit=crop&q=80&w=1400",
-      },
-      {
-        key: "pro",
-        title: "Kitchen Pro Jug",
-        price: "$120.00",
-        subtitle: "1 Gallon for professionals",
-        outOfStock: true,
-        image:
-          "https://images.unsplash.com/photo-1553530666-ba11a7da3888?auto=format&fit=crop&q=80&w=1400",
-      },
-    ].map((p) => ({ ...p, type: "placeholder" as const }));
-    return realProducts.length > 0 ? realProducts : placeholders;
+    return realProducts;
   }, [dbProducts]);
 
   return (

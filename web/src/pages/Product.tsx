@@ -6,20 +6,33 @@ import {
   useParams,
 } from "react-router-dom";
 import { useCart } from "../cart/CartContext";
-import { getProductById, getProducts } from "../lib/api";
+import {
+  getCategoryImages,
+  getProductById,
+  getProducts,
+} from "../lib/api";
 import { LayoutOutletContext } from "../components/Layout";
-import { Product as ProductType } from "../types";
+import { Product as ProductType, ProductVariantValue } from "../types";
 
-const FALLBACK_IMAGES: Record<string, string> = {
-  "red-ember-spice":
-    "https://images.unsplash.com/photo-1604909053196-3f1f510c2c5c?auto=format&fit=crop&q=80&w=1400",
-  "smoked-ghost":
-    "https://images.unsplash.com/photo-1626808642875-0aa545482dfb?auto=format&fit=crop&q=80&w=1400",
-  "honey-habanero":
-    "https://images.unsplash.com/photo-1600628422019-6c1b0b2f7b1c?auto=format&fit=crop&q=80&w=1400",
-  "sichuan-gold":
-    "https://images.unsplash.com/photo-1615485737657-9f5f0a2d9b0a?auto=format&fit=crop&q=80&w=1400",
-};
+const PLACEHOLDER_IMAGE =
+  "data:image/svg+xml;charset=utf-8," +
+  encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1500" viewBox="0 0 1200 1500">
+      <defs>
+        <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#0f172a"/>
+          <stop offset="1" stop-color="#1f2937"/>
+        </linearGradient>
+      </defs>
+      <rect width="1200" height="1500" fill="url(#g)"/>
+      <rect x="110" y="140" width="980" height="1220" rx="36" fill="#111827" opacity="0.55"/>
+      <g fill="#94a3b8" opacity="0.9">
+        <path d="M540 640c0-33 27-60 60-60s60 27 60 60-27 60-60 60-60-27-60-60z"/>
+        <path d="M360 980l170-210 130 160 95-110 215 270H360z"/>
+      </g>
+      <text x="600" y="1180" text-anchor="middle" font-family="system-ui, -apple-system, Segoe UI, Roboto" font-size="44" fill="#e5e7eb" opacity="0.9">No image</text>
+    </svg>`
+  );
 
 interface HeatLevelProps {
   value?: number;
@@ -63,6 +76,11 @@ export default function Product() {
   const [product, setProduct] = useState<ProductType | null>(null);
   const [variants, setVariants] = useState<ProductType[]>([]);
   const [variantsLoading, setVariantsLoading] = useState<boolean>(false);
+  const [galleryImages, setGalleryImages] = useState<string[]>([]);
+  const [selectedImage, setSelectedImage] = useState<string>("");
+  const [selectedVariantValues, setSelectedVariantValues] = useState<
+    Record<string, string>
+  >({});
   const [quantity, setQuantity] = useState<number>(1);
   const [error, setError] = useState<string>("");
 
@@ -90,6 +108,40 @@ export default function Product() {
         if (!cancelled) {
           setProduct(p);
           setQuantity(1);
+          setSelectedImage("");
+          setGalleryImages([]);
+          // Initialize selected variant values from current product
+          if (p.variantValues) {
+            const initialValues: Record<string, string> = {};
+            p.variantValues.forEach((vv: ProductVariantValue) => {
+              if (vv.variantType) {
+                initialValues[vv.variantType.id] = vv.value;
+              }
+            });
+            setSelectedVariantValues(initialValues);
+          }
+
+          // Load category images for the image gallery (if product belongs to a category)
+          if (p.categoryId) {
+            try {
+              const imgs = await getCategoryImages(p.categoryId);
+              if (cancelled) return;
+              const urls = (Array.isArray(imgs) ? imgs : [])
+                .map((img: any) => String(img?.url || "").trim())
+                .filter(Boolean);
+              const unique: string[] = [];
+              const seen = new Set<string>();
+              for (const u of urls) {
+                if (seen.has(u)) continue;
+                seen.add(u);
+                unique.push(u);
+              }
+              setGalleryImages(unique);
+            } catch {
+              // If group images can't be loaded, fall back to product.imageUrl only.
+              if (!cancelled) setGalleryImages([]);
+            }
+          }
         }
       } catch (e) {
         if (!cancelled) setError((e as Error).message);
@@ -104,7 +156,7 @@ export default function Product() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      if (!product?.groupId) {
+      if (!product?.categoryId) {
         setVariants([]);
         return;
       }
@@ -115,7 +167,7 @@ export default function Product() {
         if (cancelled) return;
 
         const sameGroup = (Array.isArray(list) ? list : [])
-          .filter((p) => p && p.groupId === product.groupId)
+          .filter((p) => p && p.categoryId === product.categoryId)
           .sort((a, b) => {
             const av = (a.variantName || a.sku || "").toString();
             const bv = (b.variantName || b.sku || "").toString();
@@ -132,7 +184,7 @@ export default function Product() {
     return () => {
       cancelled = true;
     };
-  }, [product?.groupId]);
+  }, [product?.categoryId]);
 
   function onAddToCart(): void {
     if (!product) return;
@@ -149,14 +201,27 @@ export default function Product() {
     });
   }, [setHeaderState]);
 
-  const price = product
-    ? `$${(product.priceCents / 100).toFixed(2)}`
-    : "$22.00";
+  const price = product ? `$${(product.priceCents / 100).toFixed(2)}` : "$0.00";
+
+  const images = useMemo(() => {
+    const urls = [product?.imageUrl || "", ...galleryImages]
+      .map((u) => String(u || "").trim())
+      .filter(Boolean);
+
+    const unique: string[] = [];
+    const seen = new Set<string>();
+    for (const u of urls) {
+      if (seen.has(u)) continue;
+      seen.add(u);
+      unique.push(u);
+    }
+    return unique;
+  }, [product?.imageUrl, galleryImages]);
 
   const heroImage =
-    product?.imageUrl ||
-    FALLBACK_IMAGES[id || ""] ||
-    "https://images.unsplash.com/photo-1596040033229-a9821ebd058d?auto=format&fit=crop&q=80&w=1600";
+    (selectedImage && images.includes(selectedImage) ? selectedImage : "") ||
+    images[0] ||
+    PLACEHOLDER_IMAGE;
 
   return (
     <main className="max-w-7xl mx-auto px-4 py-8 lg:py-16">
@@ -171,30 +236,49 @@ export default function Product() {
           </div>
 
           <div className="grid grid-cols-4 gap-4">
-            <div className="aspect-square bg-stone-100 dark:bg-stone-900 rounded-md cursor-pointer border-2 border-primary overflow-hidden">
-              <img
-                alt="Thumbnail 1"
-                className="w-full h-full object-cover"
-                src={heroImage}
-              />
-            </div>
-            <div className="aspect-square bg-stone-100 dark:bg-stone-900 rounded-md cursor-pointer opacity-70 hover:opacity-100 overflow-hidden">
-              <img
-                alt="Thumbnail 2"
-                className="w-full h-full object-cover"
-                src="https://images.unsplash.com/photo-1546549032-9571cd6b27df?auto=format&fit=crop&q=80&w=400"
-              />
-            </div>
-            <div className="aspect-square bg-stone-100 dark:bg-stone-900 rounded-md cursor-pointer opacity-70 hover:opacity-100 overflow-hidden">
-              <img
-                alt="Thumbnail 3"
-                className="w-full h-full object-cover"
-                src="https://images.unsplash.com/photo-1553530666-ba11a7da3888?auto=format&fit=crop&q=80&w=400"
-              />
-            </div>
-            <div className="aspect-square bg-stone-100 dark:bg-stone-900 rounded-md flex items-center justify-center cursor-pointer hover:bg-stone-200 dark:hover:bg-stone-800">
-              <span className="material-symbols-outlined">play_circle</span>
-            </div>
+            {(images.length > 0 ? images.slice(0, 4) : [PLACEHOLDER_IMAGE]).map(
+              (url, idx) => {
+                const active = url === heroImage;
+
+                if (images.length === 0) {
+                  return (
+                    // eslint-disable-next-line react/no-array-index-key
+                    <div
+                      key={idx}
+                      className="aspect-square rounded-md overflow-hidden border border-stone-200 dark:border-stone-800 bg-stone-100 dark:bg-stone-900"
+                    >
+                      <img
+                        alt="No image"
+                        className="w-full h-full object-cover"
+                        src={url}
+                      />
+                    </div>
+                  );
+                }
+
+                return (
+                  // eslint-disable-next-line react/no-array-index-key
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => setSelectedImage(url)}
+                    className={
+                      "aspect-square rounded-md overflow-hidden transition-all " +
+                      (active
+                        ? "border-2 border-primary"
+                        : "border border-transparent opacity-80 hover:opacity-100") +
+                      " bg-stone-100 dark:bg-stone-900"
+                    }
+                  >
+                    <img
+                      alt={`Thumbnail ${idx + 1}`}
+                      className="w-full h-full object-cover"
+                      src={url}
+                    />
+                  </button>
+                );
+              }
+            )}
           </div>
         </div>
 
@@ -253,54 +337,160 @@ export default function Product() {
               </div>
             </div>
 
-            <p className="text-stone-600 dark:text-stone-300 leading-relaxed">
-              {product?.description ||
-                "Hand-crafted in small batches using premium aromatics and our proprietary chili blend. Deep, smoky complexity that elevates any dish without overwhelming your palate."}
-            </p>
+            <div
+              className="text-stone-600 dark:text-stone-300 leading-relaxed prose prose-sm dark:prose-invert max-w-none"
+              dangerouslySetInnerHTML={{
+                __html:
+                  product?.description ||
+                  "<p>Hand-crafted in small batches using premium aromatics and our proprietary chili blend. Deep, smoky complexity that elevates any dish without overwhelming your palate.</p>",
+              }}
+            />
 
-            <div>
-              <h3 className="text-xs uppercase tracking-widest font-bold mb-3 text-stone-500">
-                Select Size
-              </h3>
-              <div className="flex flex-wrap gap-3">
-                {variantsLoading && (
-                  <span className="text-sm text-stone-500 dark:text-stone-400">
-                    Loading sizes…
-                  </span>
-                )}
+            {/* Variant Selectors */}
+            {!variantsLoading &&
+              variants.length > 0 &&
+              (() => {
+                // Group variant types from all variants
+                const variantTypeMap = new Map<
+                  string,
+                  { name: string; displayOrder: number; values: Set<string> }
+                >();
 
-                {!variantsLoading &&
-                  variants.length > 0 &&
-                  variants.map((v) => {
-                    const label = v.variantName || v.sku || v.id;
-                    const isSelected = v.id === product?.id;
-                    return (
-                      <button
-                        key={v.id}
-                        type="button"
-                        onClick={() => navigate(`/product/${v.id}`)}
-                        className={
-                          isSelected
-                            ? "px-6 py-2 border-2 border-primary bg-primary/5 text-primary font-semibold text-sm rounded transition-all"
-                            : "px-6 py-2 border-2 border-stone-200 dark:border-stone-800 text-stone-600 dark:text-stone-400 font-semibold text-sm rounded hover:border-primary transition-all"
-                        }
-                      >
-                        {label}
-                      </button>
+                variants.forEach((v) => {
+                  v.variantValues?.forEach((vv) => {
+                    if (!vv.variantType) return;
+
+                    if (!variantTypeMap.has(vv.variantType.id)) {
+                      variantTypeMap.set(vv.variantType.id, {
+                        name: vv.variantType.name,
+                        displayOrder: vv.variantType.displayOrder,
+                        values: new Set(),
+                      });
+                    }
+                    variantTypeMap.get(vv.variantType.id)!.values.add(vv.value);
+                  });
+                });
+
+                // Sort by display order
+                const variantTypes = Array.from(variantTypeMap.entries())
+                  .map(([id, data]) => ({ id, ...data }))
+                  .sort((a, b) => a.displayOrder - b.displayOrder);
+
+                // Function to find matching variant
+                const findMatchingVariant = (
+                  selections: Record<string, string>
+                ) => {
+                  return variants.find((v) => {
+                    const variantAttrs: Record<string, string> = {};
+                    v.variantValues?.forEach((vv) => {
+                      if (vv.variantType) {
+                        variantAttrs[vv.variantType.id] = vv.value;
+                      }
+                    });
+
+                    return Object.keys(selections).every(
+                      (typeId) => variantAttrs[typeId] === selections[typeId]
                     );
-                  })}
+                  });
+                };
 
-                {!variantsLoading && variants.length === 0 && product && (
-                  <button
-                    type="button"
-                    disabled
-                    className="px-6 py-2 border-2 border-primary bg-primary/5 text-primary font-semibold text-sm rounded transition-all opacity-80 cursor-default"
-                  >
-                    {product.variantName || product.sku || "Default"}
-                  </button>
-                )}
+                // Handle variant value change
+                const handleVariantChange = (typeId: string, value: string) => {
+                  const newSelections = {
+                    ...selectedVariantValues,
+                    [typeId]: value,
+                  };
+                  setSelectedVariantValues(newSelections);
+
+                  // Find matching variant and navigate to it
+                  const matchingVariant = findMatchingVariant(newSelections);
+                  if (matchingVariant) {
+                    navigate(`/product/${matchingVariant.id}`);
+                  }
+                };
+
+                return variantTypes.map((type) => (
+                  <div key={type.id} className="space-y-3">
+                    <h3 className="text-xs uppercase tracking-widest font-bold text-stone-500">
+                      Select {type.name}
+                    </h3>
+                    <div className="flex flex-wrap gap-3">
+                      {Array.from(type.values)
+                        .sort()
+                        .map((value) => {
+                          const isSelected =
+                            selectedVariantValues[type.id] === value;
+
+                          // Check if this combination is available
+                          const testSelections = {
+                            ...selectedVariantValues,
+                            [type.id]: value,
+                          };
+                          const isAvailable =
+                            findMatchingVariant(testSelections);
+
+                          return (
+                            <button
+                              key={value}
+                              type="button"
+                              onClick={() =>
+                                handleVariantChange(type.id, value)
+                              }
+                              disabled={!isAvailable}
+                              className={
+                                isSelected
+                                  ? "px-6 py-2 border-2 border-primary bg-primary/5 text-primary font-semibold text-sm rounded transition-all"
+                                  : isAvailable
+                                  ? "px-6 py-2 border-2 border-stone-200 dark:border-stone-800 text-stone-600 dark:text-stone-400 font-semibold text-sm rounded hover:border-primary transition-all"
+                                  : "px-6 py-2 border-2 border-stone-200 dark:border-stone-800 text-stone-400 dark:text-stone-600 font-semibold text-sm rounded opacity-40 cursor-not-allowed line-through"
+                              }
+                            >
+                              {value}
+                            </button>
+                          );
+                        })}
+                    </div>
+                  </div>
+                ));
+              })()}
+
+            {/* Fallback for products without variants */}
+            {!variantsLoading &&
+              variants.length === 0 &&
+              product &&
+              product.variantName && (
+                <div className="space-y-3">
+                  <h3 className="text-xs uppercase tracking-widest font-bold text-stone-500">
+                    Size
+                  </h3>
+                  <div className="flex flex-wrap gap-3">
+                    <button
+                      type="button"
+                      disabled
+                      className="px-6 py-2 border-2 border-primary bg-primary/5 text-primary font-semibold text-sm rounded transition-all opacity-80 cursor-default"
+                    >
+                      {product.variantName}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+            {/* Loading state */}
+            {variantsLoading && (
+              <div className="space-y-3">
+                <h3 className="text-xs uppercase tracking-widest font-bold text-stone-500">
+                  Loading options…
+                </h3>
+                <div className="flex gap-3">
+                  <div className="px-6 py-2 border-2 border-stone-200 dark:border-stone-800 rounded animate-pulse bg-stone-100 dark:bg-stone-800">
+                    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+                  </div>
+                  <div className="px-6 py-2 border-2 border-stone-200 dark:border-stone-800 rounded animate-pulse bg-stone-100 dark:bg-stone-800">
+                    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+                  </div>
+                </div>
               </div>
-            </div>
+            )}
 
             {error && (
               <div className="bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900/40 rounded-lg px-4 py-3">
@@ -376,17 +566,17 @@ export default function Product() {
           {[
             {
               title: "Drunken Noodles",
-              img: "https://images.unsplash.com/photo-1617196034183-421b4917cfd1?auto=format&fit=crop&q=80&w=1200",
+              img: PLACEHOLDER_IMAGE,
               text: "Drizzle generously over hot noodles for instant depth of umami.",
             },
             {
               title: "Neapolitan Pizza",
-              img: "https://images.unsplash.com/photo-1548365328-9f5470ce64d7?auto=format&fit=crop&q=80&w=1200",
+              img: PLACEHOLDER_IMAGE,
               text: "Smoky garlic notes complement wood-fired crusts and fresh mozzarella.",
             },
             {
               title: "Morning Eggs",
-              img: "https://images.unsplash.com/photo-1551218808-94e220e084d2?auto=format&fit=crop&q=80&w=1200",
+              img: PLACEHOLDER_IMAGE,
               text: "Add a spoonful to eggs or toast to kickstart your day with a savory punch.",
             },
           ].map((p) => (
